@@ -1,3 +1,6 @@
+app.get('/', (req, res) => {
+  res.send('<h1>GPX Collaboration API</h1><p>Endpoints disponibles : /health, /metrics</p>');
+});
 // Garbage collector des rooms inactives
 // Garbage collector des rooms inactives
 
@@ -16,11 +19,14 @@ import * as roomRegistry from './room-registry';
 
 import express from 'express';
 import health from './health';
-import wsServer from './ws-server';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+
+app.get('/', (req, res) => {
+  res.send('<h1>GPX Collaboration API</h1><p>Endpoints disponibles : /health, /metrics</p>');
+});
 app.use('/health', health);
 
 app.get('/metrics', (req, res) => {
@@ -42,4 +48,3 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-wsServer.listen(server);
