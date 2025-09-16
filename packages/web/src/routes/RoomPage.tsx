@@ -1,16 +1,29 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      div: any;
+      h1: any;
+      p: any;
+      button: any;
+      MapContainer: any;
+      TileLayer: any;
+    }
+  }
+}
+import React, { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { JSX } from 'react';
 import { MapContainer, TileLayer } from 'react-leaflet';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import L, { CircleMarker, LeafletMouseEvent, LeafletEventHandlerFn, LatLng } from 'leaflet';
-import 'leaflet-geoman-free';
+import '@geoman-io/leaflet-geoman-free';
 import { nanoid } from 'nanoid';
 import toast from 'react-hot-toast';
 import { gpx as gpxToGeoJSON } from 'togeojson';
-import togpx from '@tmcw/togpx';
+import togpx from 'togpx';
 import type { Feature as GeoJsonFeature, FeatureCollection, GeoJsonObject, LineString, Point } from 'geojson';
 
-import type { AwarenessStateFields, CollaborativeFeature, ViewState } from '../collaboration/types';
-import { useRoomConnection } from '../collaboration/useRoomConnection';
+import type { AwarenessStateFields, CollaborativeFeature, ViewState } from '../collaboration/types.js';
+import { useRoomConnection } from '../collaboration/useRoomConnection.js';
 
 const DEFAULT_CENTER: [number, number] = [46.7111, 1.7191];
 const DEFAULT_ZOOM = 6;
@@ -68,7 +81,7 @@ const latLngToPoint = (latlng: L.LatLng): [number, number] => [roundCoordinate(l
 
 const geometryToLatLngs = (geometry: LineString | Point) => {
   if (geometry.type === 'LineString') {
-    return geometry.coordinates.map(([lng, lat]) => new L.LatLng(lat, lng));
+  return geometry.coordinates.map(([lng, lat]: [number, number]) => new L.LatLng(lat, lng));
   }
   return [new L.LatLng(geometry.coordinates[1], geometry.coordinates[0])];
 };
@@ -85,7 +98,7 @@ const createCursorIcon = (name: string, color: string) =>
 const normalizeFeature = (feature: CollaborativeFeature): CollaborativeFeature => {
   const geometry = feature.geometry;
   if (geometry.type === 'LineString') {
-    geometry.coordinates = geometry.coordinates.map(([lng, lat]) => [roundCoordinate(lng), roundCoordinate(lat)]);
+  geometry.coordinates = geometry.coordinates.map(([lng, lat]: [number, number]) => [roundCoordinate(lng), roundCoordinate(lat)]);
   }
   if (geometry.type === 'Point') {
     geometry.coordinates = [roundCoordinate(geometry.coordinates[0]), roundCoordinate(geometry.coordinates[1])];
@@ -125,7 +138,7 @@ const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
 
   if (feature.geometry?.type === 'MultiLineString') {
     const multi = feature.geometry.coordinates;
-    return multi.map((coords) =>
+  return multi.map((coords: [number, number][]) =>
       normalizeFeature({
         ...(feature as GeoJsonFeature<LineString>),
         geometry: { type: 'LineString', coordinates: coords },
@@ -141,7 +154,7 @@ const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
 
   if (feature.geometry?.type === 'MultiPoint') {
     const multi = feature.geometry.coordinates;
-    return multi.map((coord) =>
+  return multi.map((coord: [number, number]) =>
       normalizeFeature({
         ...(feature as GeoJsonFeature<Point>),
         geometry: { type: 'Point', coordinates: coord },
@@ -249,6 +262,53 @@ const RoomPage = () => {
   const localSelectionRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const handleImportFiles = useCallback(
+    async (files: FileList | File[]) => {
+      if (!connection) {
+        toast.error('Connexion non établie.');
+        return;
+      }
+      if (readOnly) {
+        toast.error('Session en lecture seule.');
+        return;
+      }
+      const list = Array.from(files);
+      let importedFeatures: CollaborativeFeature[] = [];
+
+      for (const file of list) {
+        if (file.size > MAX_FILE_SIZE) {
+          toast.error(`“${file.name}” est trop volumineux (max 10 Mo).`);
+          continue;
+        }
+        try {
+          const text = await file.text();
+          const parser = new DOMParser();
+          const xml = parser.parseFromString(text, 'application/xml');
+          if (xml.getElementsByTagName('parsererror').length > 0) {
+            throw new Error('GPX invalide');
+          }
+          const geojson = gpxToGeoJSON(xml) as FeatureCollection;
+          geojson.features.forEach((feature: any) => {
+            importedFeatures = importedFeatures.concat(ensureFeature(feature));
+          });
+        } catch (error) {
+          console.error(error);
+          toast.error(`Impossible d’importer ${file.name}`);
+        }
+      }
+
+      if (importedFeatures.length === 0) {
+        return;
+      }
+
+      connection.doc.transact(() => {
+        connection.features.push(importedFeatures);
+      }, undoOrigin);
+      toast.success(`${importedFeatures.length} élément(s) importé(s).`);
+    },
+    [connection, readOnly, undoOrigin]
+  );
+
   useEffect(() => {
     document.title = roomId ? `Session GPX • ${roomId}` : 'GPX Collaboration';
     return () => {
@@ -307,7 +367,7 @@ const RoomPage = () => {
 
     const updateParticipants = () => {
       const list: Participant[] = [];
-      awarenessStates.forEach((state, clientId) => {
+  awarenessStates.forEach((state: any, clientId: any) => {
         if (!state?.user) {
           return;
         }
@@ -368,7 +428,7 @@ const RoomPage = () => {
   const updateLayerGeometry = useCallback(
     (layer: L.Layer, feature: CollaborativeFeature) => {
       if (feature.geometry.type === 'LineString' && layer instanceof L.Polyline) {
-        layer.setLatLngs(feature.geometry.coordinates.map(([lng, lat]) => [lat, lng]));
+  layer.setLatLngs(feature.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]));
       }
       if (feature.geometry.type === 'Point' && layer instanceof L.CircleMarker) {
         layer.setLatLng(new L.LatLng(feature.geometry.coordinates[1], feature.geometry.coordinates[0]));
@@ -465,7 +525,7 @@ const RoomPage = () => {
         return;
       }
       const seen = new Set<string>();
-      items.forEach((feature) => {
+  items.forEach((feature: any) => {
         seen.add(feature.id);
         featureCacheRef.current.set(feature.id, feature);
         const existing = layersRef.current.get(feature.id);
@@ -480,7 +540,7 @@ const RoomPage = () => {
         }
       });
 
-      Array.from(layersRef.current.keys()).forEach((featureId) => {
+  Array.from(layersRef.current.keys()).forEach((featureId: any) => {
         if (!seen.has(featureId)) {
           const layer = layersRef.current.get(featureId);
           if (layer) {
@@ -518,12 +578,12 @@ const RoomPage = () => {
     if (!map) {
       return;
     }
-    highlightsRef.current.forEach((layer) => {
+  highlightsRef.current.forEach((layer: any) => {
       map.removeLayer(layer);
     });
     highlightsRef.current.clear();
 
-    selectionState.forEach((featureId, clientKey) => {
+  selectionState.forEach((featureId: any, clientKey: any) => {
       const baseLayer = layersRef.current.get(featureId);
       const sourceFeature = featureCacheRef.current.get(featureId);
       const participant = awarenessStates.get(Number(clientKey)) as AwarenessStateFields | undefined;
@@ -571,7 +631,7 @@ const RoomPage = () => {
 
     const seen = new Set<number>();
 
-    awarenessStates.forEach((state, clientId) => {
+  awarenessStates.forEach((state: any, clientId: any) => {
       if (!state?.cursor) {
         return;
       }
@@ -591,13 +651,15 @@ const RoomPage = () => {
       }
     });
 
-    Array.from(cursorMarkersRef.current.entries()).forEach(([clientId, marker]) => {
+  Array.from(cursorMarkersRef.current.entries()).forEach(([clientId, marker]: [any, any]) => {
       if (!seen.has(clientId)) {
         map.removeLayer(marker);
         cursorMarkersRef.current.delete(clientId);
       }
     });
   }, [awarenessStates]);
+
+
 
   useEffect(() => {
     const map = mapRef.current;
@@ -783,52 +845,6 @@ const RoomPage = () => {
     };
   }, [attachLayerHandlers, connection, layerToFeature, readOnly, undoOrigin]);
 
-  const handleImportFiles = useCallback(
-    async (files: FileList | File[]) => {
-      if (!connection) {
-        toast.error('Connexion non établie.');
-        return;
-      }
-      if (readOnly) {
-        toast.error('Session en lecture seule.');
-        return;
-      }
-      const list = Array.from(files);
-      let importedFeatures: CollaborativeFeature[] = [];
-
-      for (const file of list) {
-        if (file.size > MAX_FILE_SIZE) {
-          toast.error(`“${file.name}” est trop volumineux (max 10 Mo).`);
-          continue;
-        }
-        try {
-          const text = await file.text();
-          const parser = new DOMParser();
-          const xml = parser.parseFromString(text, 'application/xml');
-          if (xml.getElementsByTagName('parsererror').length > 0) {
-            throw new Error('GPX invalide');
-          }
-          const geojson = gpxToGeoJSON(xml) as FeatureCollection;
-          geojson.features.forEach((feature) => {
-            importedFeatures = importedFeatures.concat(ensureFeature(feature));
-          });
-        } catch (error) {
-          console.error(error);
-          toast.error(`Impossible d’importer ${file.name}`);
-        }
-      }
-
-      if (importedFeatures.length === 0) {
-        return;
-      }
-
-      connection.doc.transact(() => {
-        connection.features.push(importedFeatures);
-      }, undoOrigin);
-      toast.success(`${importedFeatures.length} élément(s) importé(s).`);
-    },
-    [connection, readOnly, undoOrigin]
-  );
 
   const handleFileInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {

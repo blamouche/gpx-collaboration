@@ -7,7 +7,7 @@ import HomePage from './routes/HomePage';
 import RoomPage from './routes/RoomPage';
 
 import 'leaflet/dist/leaflet.css';
-import 'leaflet-geoman-free/dist/leaflet-geoman.css';
+import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import './styles.css';
 
 const router = createBrowserRouter([
