@@ -1,28 +1,29 @@
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      div: any;
-      h1: any;
-      p: any;
-      button: any;
-      MapContainer: any;
-      TileLayer: any;
-    }
-  }
-}
+import '@geoman-io/leaflet-geoman-free';
+import type {
+  Feature as GeoJsonFeature,
+  FeatureCollection,
+  GeoJsonObject,
+  LineString,
+  MultiLineString,
+  MultiPoint,
+  Point
+} from 'geojson';
+import L, {
+  CircleMarker,
+  LeafletEvent,
+  LeafletEventHandlerFn,
+  LeafletMouseEvent,
+  LatLng
+} from 'leaflet';
+import { nanoid } from 'nanoid';
 import React, { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { JSX } from 'react';
+import toast from 'react-hot-toast';
 import { MapContainer, TileLayer } from 'react-leaflet';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import L, { CircleMarker, LeafletMouseEvent, LeafletEventHandlerFn, LatLng } from 'leaflet';
-import '@geoman-io/leaflet-geoman-free';
-import { nanoid } from 'nanoid';
-import toast from 'react-hot-toast';
 import { gpx as gpxToGeoJSON } from 'togeojson';
 import togpx from 'togpx';
-import type { Feature as GeoJsonFeature, FeatureCollection, GeoJsonObject, LineString, Point } from 'geojson';
 
-import type { AwarenessStateFields, CollaborativeFeature, ViewState } from '../collaboration/types.js';
+import type { CollaborativeFeature, ViewState } from '../collaboration/types.js';
 import { useRoomConnection } from '../collaboration/useRoomConnection.js';
 
 const DEFAULT_CENTER: [number, number] = [46.7111, 1.7191];
@@ -45,7 +46,18 @@ const POINT_STYLE: L.PathOptions = {
 
 const HIGHLIGHT_WEIGHT = 7;
 
-const throttle = <T extends (...args: never[]) => void>(fn: T, wait: number) => {
+type FeatureLayer = L.Layer & {
+  featureId?: string;
+  feature?: CollaborativeFeature;
+};
+
+type ImportableFeature = GeoJsonFeature<LineString | Point | MultiLineString | MultiPoint>;
+
+type GeomanLayerEvent = LeafletEvent & {
+  layer: FeatureLayer;
+};
+
+const throttle = <T extends (...args: unknown[]) => void>(fn: T, wait: number) => {
   let last = 0;
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let trailing: Parameters<T> | null = null;
@@ -77,15 +89,6 @@ const throttle = <T extends (...args: never[]) => void>(fn: T, wait: number) => 
 
 const roundCoordinate = (value: number) => Number(value.toFixed(6));
 
-const latLngToPoint = (latlng: L.LatLng): [number, number] => [roundCoordinate(latlng.lng), roundCoordinate(latlng.lat)];
-
-const geometryToLatLngs = (geometry: LineString | Point) => {
-  if (geometry.type === 'LineString') {
-  return geometry.coordinates.map(([lng, lat]: [number, number]) => new L.LatLng(lat, lng));
-  }
-  return [new L.LatLng(geometry.coordinates[1], geometry.coordinates[0])];
-};
-
 const createCursorIcon = (name: string, color: string) =>
   L.divIcon({
     className: 'cursor-marker',
@@ -98,21 +101,26 @@ const createCursorIcon = (name: string, color: string) =>
 const normalizeFeature = (feature: CollaborativeFeature): CollaborativeFeature => {
   const geometry = feature.geometry;
   if (geometry.type === 'LineString') {
-  geometry.coordinates = geometry.coordinates.map(([lng, lat]: [number, number]) => [roundCoordinate(lng), roundCoordinate(lat)]);
+    geometry.coordinates = geometry.coordinates.map(([lng, lat]: [number, number]) => [
+      roundCoordinate(lng),
+      roundCoordinate(lat)
+    ]);
   }
   if (geometry.type === 'Point') {
-    geometry.coordinates = [roundCoordinate(geometry.coordinates[0]), roundCoordinate(geometry.coordinates[1])];
+    geometry.coordinates = [
+      roundCoordinate(geometry.coordinates[0]),
+      roundCoordinate(geometry.coordinates[1])
+    ];
   }
   return feature;
 };
 
-const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
-  const id = nanoid();
+const ensureFeature = (feature: ImportableFeature): CollaborativeFeature[] => {
   if (feature.geometry?.type === 'LineString') {
     return [
       normalizeFeature({
         ...(feature as GeoJsonFeature<LineString>),
-        id,
+        id: nanoid(),
         properties: {
           kind: 'line',
           name: feature.properties?.name,
@@ -126,7 +134,7 @@ const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
     return [
       normalizeFeature({
         ...(feature as GeoJsonFeature<Point>),
-        id,
+        id: nanoid(),
         properties: {
           kind: 'point',
           name: feature.properties?.name,
@@ -137,8 +145,7 @@ const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
   }
 
   if (feature.geometry?.type === 'MultiLineString') {
-    const multi = feature.geometry.coordinates;
-  return multi.map((coords: [number, number][]) =>
+    return feature.geometry.coordinates.map((coords) =>
       normalizeFeature({
         ...(feature as GeoJsonFeature<LineString>),
         geometry: { type: 'LineString', coordinates: coords },
@@ -153,8 +160,7 @@ const ensureFeature = (feature: GeoJsonFeature): CollaborativeFeature[] => {
   }
 
   if (feature.geometry?.type === 'MultiPoint') {
-    const multi = feature.geometry.coordinates;
-  return multi.map((coord: [number, number]) =>
+    return feature.geometry.coordinates.map((coord) =>
       normalizeFeature({
         ...(feature as GeoJsonFeature<Point>),
         geometry: { type: 'Point', coordinates: coord },
@@ -253,7 +259,7 @@ const RoomPage = () => {
   const [isDragActive, setIsDragActive] = useState(false);
 
   const mapRef = useRef<L.Map | null>(null);
-  const layersRef = useRef<Map<string, L.Layer>>(new Map());
+  const layersRef = useRef<Map<string, FeatureLayer>>(new Map());
   const layerHandlersRef = useRef<Map<string, LayerEventHandlers>>(new Map());
   const highlightsRef = useRef<Map<string, L.Layer>>(new Map());
   const cursorMarkersRef = useRef<Map<number, L.Marker>>(new Map());
@@ -287,10 +293,12 @@ const RoomPage = () => {
           if (xml.getElementsByTagName('parsererror').length > 0) {
             throw new Error('GPX invalide');
           }
-          const geojson = gpxToGeoJSON(xml) as FeatureCollection;
-          geojson.features.forEach((feature: any) => {
-            importedFeatures = importedFeatures.concat(ensureFeature(feature));
-          });
+          const geojson = gpxToGeoJSON(xml) as FeatureCollection<
+            LineString | Point | MultiLineString | MultiPoint
+          >;
+          for (const feature of geojson.features) {
+            importedFeatures = importedFeatures.concat(ensureFeature(feature as ImportableFeature));
+          }
         } catch (error) {
           console.error(error);
           toast.error(`Impossible d’importer ${file.name}`);
@@ -360,14 +368,13 @@ const RoomPage = () => {
   }, [connection]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !connection || readOnly) {
+    if (!connection) {
       return;
     }
 
     const updateParticipants = () => {
       const list: Participant[] = [];
-  awarenessStates.forEach((state: any, clientId: any) => {
+      awarenessStates.forEach((state, clientId) => {
         if (!state?.user) {
           return;
         }
@@ -396,26 +403,26 @@ const RoomPage = () => {
   }, []);
 
   const createLayerForFeature = useCallback(
-    (feature: CollaborativeFeature) => {
+    (feature: CollaborativeFeature): FeatureLayer | null => {
       const map = mapRef.current;
       if (!map) {
         return null;
       }
 
-      let createdLayer: L.Layer | null = null;
+      let createdLayer: FeatureLayer | null = null;
       L.geoJSON(feature as GeoJsonObject, {
         style: () => LINE_STYLE,
         pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { ...POINT_STYLE, radius: 6 })
       }).eachLayer((layer) => {
-        createdLayer = layer;
+        createdLayer = layer as FeatureLayer;
       });
 
       if (!createdLayer) {
         return null;
       }
 
-      (createdLayer as any).featureId = feature.id;
-      (createdLayer as any).feature = feature;
+      createdLayer.featureId = feature.id;
+      createdLayer.feature = feature;
       createdLayer.addTo(map);
       applyBaseStyle(createdLayer, feature);
       map.pm.addLayersToDrawnItems(createdLayer);
@@ -426,14 +433,14 @@ const RoomPage = () => {
   );
 
   const updateLayerGeometry = useCallback(
-    (layer: L.Layer, feature: CollaborativeFeature) => {
+    (layer: FeatureLayer, feature: CollaborativeFeature) => {
       if (feature.geometry.type === 'LineString' && layer instanceof L.Polyline) {
-  layer.setLatLngs(feature.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]));
+        layer.setLatLngs(feature.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]));
       }
       if (feature.geometry.type === 'Point' && layer instanceof L.CircleMarker) {
         layer.setLatLng(new L.LatLng(feature.geometry.coordinates[1], feature.geometry.coordinates[0]));
       }
-      (layer as any).feature = feature;
+      layer.feature = feature;
       applyBaseStyle(layer, feature);
     },
     [applyBaseStyle]
@@ -453,7 +460,7 @@ const RoomPage = () => {
   }, []);
 
   const layerToFeature = useCallback(
-    (layer: L.Layer, featureId: string, kind: 'line' | 'point'): CollaborativeFeature => {
+    (layer: FeatureLayer, featureId: string, kind: 'line' | 'point'): CollaborativeFeature => {
       const geo = layer.toGeoJSON() as GeoJsonFeature<LineString | Point>;
       const base: CollaborativeFeature = {
         ...(geo as CollaborativeFeature),
@@ -488,7 +495,7 @@ const RoomPage = () => {
   );
 
   const attachLayerHandlers = useCallback(
-    (layer: L.Layer, feature: CollaborativeFeature) => {
+    (layer: FeatureLayer, feature: CollaborativeFeature) => {
       const featureId = feature.id;
       detachLayerHandlers(featureId);
       const editHandler = throttle(() => {
@@ -525,7 +532,7 @@ const RoomPage = () => {
         return;
       }
       const seen = new Set<string>();
-  items.forEach((feature: any) => {
+      items.forEach((feature) => {
         seen.add(feature.id);
         featureCacheRef.current.set(feature.id, feature);
         const existing = layersRef.current.get(feature.id);
@@ -540,7 +547,7 @@ const RoomPage = () => {
         }
       });
 
-  Array.from(layersRef.current.keys()).forEach((featureId: any) => {
+      Array.from(layersRef.current.keys()).forEach((featureId) => {
         if (!seen.has(featureId)) {
           const layer = layersRef.current.get(featureId);
           if (layer) {
@@ -578,15 +585,15 @@ const RoomPage = () => {
     if (!map) {
       return;
     }
-  highlightsRef.current.forEach((layer: any) => {
+    highlightsRef.current.forEach((layer) => {
       map.removeLayer(layer);
     });
     highlightsRef.current.clear();
 
-  selectionState.forEach((featureId: any, clientKey: any) => {
+    selectionState.forEach((featureId, clientKey) => {
       const baseLayer = layersRef.current.get(featureId);
       const sourceFeature = featureCacheRef.current.get(featureId);
-      const participant = awarenessStates.get(Number(clientKey)) as AwarenessStateFields | undefined;
+      const participant = awarenessStates.get(Number(clientKey));
       if (!baseLayer || !participant?.user || !sourceFeature) {
         return;
       }
@@ -608,16 +615,19 @@ const RoomPage = () => {
             opacity: 0.9,
             weight: 3
           })
-      }).eachLayer((layer) => {
-        highlight = layer;
+        }).eachLayer((layer) => {
+          highlight = layer;
+        });
+        if (highlight) {
+          const highlightLayer = highlight as L.Layer & { options?: L.PathOptions };
+          highlightLayer.addTo(map);
+          if (highlightLayer.options) {
+            highlightLayer.options.interactive = false;
+          }
+          highlightsRef.current.set(clientKey, highlightLayer);
+        }
       });
-      if (highlight) {
-        highlight!.addTo(map);
-        (highlight as any).options.interactive = false;
-        highlightsRef.current.set(clientKey, highlight!);
-      }
-    });
-  }, [awarenessStates, selectionState]);
+    }, [awarenessStates, selectionState]);
 
   useEffect(() => {
     refreshSelectionHighlights();
@@ -631,12 +641,12 @@ const RoomPage = () => {
 
     const seen = new Set<number>();
 
-  awarenessStates.forEach((state: any, clientId: any) => {
-      if (!state?.cursor) {
-        return;
-      }
-      seen.add(clientId);
-      const { cursor, user: participant } = state;
+      awarenessStates.forEach((state, clientId) => {
+        if (!state?.cursor) {
+          return;
+        }
+        seen.add(clientId);
+        const { cursor, user: participant } = state;
       const latlng = new L.LatLng(cursor.lat, cursor.lng);
       let marker = cursorMarkersRef.current.get(clientId);
       if (!marker) {
@@ -651,12 +661,12 @@ const RoomPage = () => {
       }
     });
 
-  Array.from(cursorMarkersRef.current.entries()).forEach(([clientId, marker]: [any, any]) => {
-      if (!seen.has(clientId)) {
-        map.removeLayer(marker);
-        cursorMarkersRef.current.delete(clientId);
-      }
-    });
+      Array.from(cursorMarkersRef.current.entries()).forEach(([clientId, marker]) => {
+        if (!seen.has(clientId)) {
+          map.removeLayer(marker);
+          cursorMarkersRef.current.delete(clientId);
+        }
+      });
   }, [awarenessStates]);
 
 
@@ -761,44 +771,44 @@ const RoomPage = () => {
     }
     map.pm.setPathOptions({ ...LINE_STYLE, fillColor: '#228be6', fillOpacity: 0.4 });
 
-    const handleCreate = (event: any) => {
-      if (!connection) {
-        return;
-      }
-      const layer = event.layer as L.Layer;
-      if (readOnly) {
-        suppressLocalEventsRef.current = true;
-        map.removeLayer(layer);
-        suppressLocalEventsRef.current = false;
-        return;
-      }
-      const kind: 'line' | 'point' = layer instanceof L.CircleMarker ? 'point' : 'line';
-      const feature: CollaborativeFeature = normalizeFeature(
-        layerToFeature(layer, nanoid(), kind)
-      );
-      (layer as any).featureId = feature.id;
-      (layer as any).feature = feature;
-      featureCacheRef.current.set(feature.id, feature);
-      layersRef.current.set(feature.id, layer);
-      attachLayerHandlers(layer, feature);
-      connection.doc.transact(() => {
-        connection.features.push([feature]);
+      const handleCreate = (event: GeomanLayerEvent) => {
+        if (!connection) {
+          return;
+        }
+        const layer = event.layer;
+        if (readOnly) {
+          suppressLocalEventsRef.current = true;
+          map.removeLayer(layer);
+          suppressLocalEventsRef.current = false;
+          return;
+        }
+        const kind: 'line' | 'point' = layer instanceof L.CircleMarker ? 'point' : 'line';
+        const feature: CollaborativeFeature = normalizeFeature(
+          layerToFeature(layer, nanoid(), kind)
+        );
+        layer.featureId = feature.id;
+        layer.feature = feature;
+        featureCacheRef.current.set(feature.id, feature);
+        layersRef.current.set(feature.id, layer);
+        attachLayerHandlers(layer, feature);
+        connection.doc.transact(() => {
+          connection.features.push([feature]);
       }, undoOrigin);
       localSelectionRef.current = feature.id;
       connection.selectionMap.set(String(connection.clientId), feature.id);
     };
 
-    const handleRemove = (event: any) => {
-      if (!connection || suppressLocalEventsRef.current || readOnly) {
-        return;
-      }
-      const layer = event.layer as L.Layer;
-      const featureId: string | undefined = (layer as any).featureId;
-      if (!featureId) {
-        return;
-      }
-      const list = connection.features.toJSON() as CollaborativeFeature[];
-      const index = list.findIndex((item) => item.id === featureId);
+      const handleRemove = (event: GeomanLayerEvent) => {
+        if (!connection || suppressLocalEventsRef.current || readOnly) {
+          return;
+        }
+        const { layer } = event;
+        const featureId = layer.featureId;
+        if (!featureId) {
+          return;
+        }
+        const list = connection.features.toJSON() as CollaborativeFeature[];
+        const index = list.findIndex((item) => item.id === featureId);
       if (index !== -1) {
         connection.doc.transact(() => {
           connection.features.delete(index, 1);
@@ -806,28 +816,28 @@ const RoomPage = () => {
       }
     };
 
-    const handleSelect = (event: any) => {
-      if (!connection) {
-        return;
-      }
-      const featureId: string | undefined = (event.layer as any).featureId;
-      if (!featureId) {
-        return;
-      }
-      localSelectionRef.current = featureId;
-      connection.selectionMap.set(String(connection.clientId), featureId);
-    };
+      const handleSelect = (event: GeomanLayerEvent) => {
+        if (!connection) {
+          return;
+        }
+        const featureId = event.layer.featureId;
+        if (!featureId) {
+          return;
+        }
+        localSelectionRef.current = featureId;
+        connection.selectionMap.set(String(connection.clientId), featureId);
+      };
 
-    const handleUnselect = (event: any) => {
-      if (!connection) {
-        return;
-      }
-      const featureId: string | undefined = (event.layer as any).featureId;
-      if (!featureId) {
-        return;
-      }
-      if (localSelectionRef.current === featureId) {
-        localSelectionRef.current = null;
+      const handleUnselect = (event: GeomanLayerEvent) => {
+        if (!connection) {
+          return;
+        }
+        const featureId = event.layer.featureId;
+        if (!featureId) {
+          return;
+        }
+        if (localSelectionRef.current === featureId) {
+          localSelectionRef.current = null;
         connection.selectionMap.delete(String(connection.clientId));
       }
     };
@@ -1123,8 +1133,8 @@ const RoomPage = () => {
     if (!map) {
       return;
     }
-    const handleRemoveFeature = (event: any) => {
-      const featureId: string | undefined = (event.layer as any).featureId;
+    const handleRemoveFeature = (event: GeomanLayerEvent) => {
+      const featureId = event.layer.featureId;
       if (featureId && selectionState.get(String(connection.clientId)) === featureId) {
         connection.selectionMap.delete(String(connection.clientId));
       }
