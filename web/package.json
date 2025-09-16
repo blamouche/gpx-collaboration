@@ -1,0 +1,11 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest",
+    "lint": "eslint src/**/*.{ts,tsx}"
+  }
+}
