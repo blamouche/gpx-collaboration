@@ -7,5 +7,15 @@
     "dev": "vite",
     "test": "vitest",
     "lint": "eslint src/**/*.{ts,tsx}"
+  },
+  "dependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.9.1",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.27"
   }
 }
